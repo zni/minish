@@ -1,3 +1,5 @@
+use std::env;
+use std::fs;
 use std::ffi::CString;
 use std::io;
 use std::io::prelude::*;
@@ -7,32 +9,51 @@ use nix::sys;
 use nix::unistd::{execve, fork, ForkResult};
 
 pub fn run() {
-    loop {
-        prompt();
-        let line = read_line();
+    let path = match env::var("PATH") {
+        Ok(value) => value,
+        Err(_) => String::from(""),
+    };
+    let paths: Vec<&str> = path.split(":").collect();
 
-        let argv = prepare_argv(&line);
-        let command = argv[0].clone();
-        let env = Vec::new();
+    loop {
+        prompt().unwrap_or_else(|err| {
+            eprintln!("Failed to display prompt: {:?}", err);
+            process::exit(1);
+        });
+
+        let line = read_line().unwrap_or_else(|err| {
+            eprintln!("Failed to read line: {:?}", err);
+            process::exit(1);
+        });
+
+        let mut argv = prepare_argv(&line);
+        let mut command = argv[0].clone();
+        if !line.starts_with(".") || !line.starts_with("/") {
+            command = match lookup_path(&command, &paths) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+        }
+        argv[0] = command.to_owned();
+
+        let env: Vec<CString> = Vec::new();
+        println!("command: {:?}", command);
+        println!("argv: {:?}", argv);
+        println!("env: {:?}", env);
         execute(&command, &argv, &env);
     }
 }
 
-fn prompt() {
+fn prompt() -> std::io::Result<()> {
     print!("> ");
-    io::stdout().flush().unwrap_or_else(|err| {
-        println!("Failed to flush stdout: {:?}", err);
-        process::exit(1);
-    });
+    io::stdout().flush()?;
+    Ok(())
 }
 
-fn read_line() -> String {
+fn read_line() -> std::io::Result<String> {
     let mut line = String::new();
-    io::stdin().read_line(&mut line).unwrap_or_else(|err| {
-        println!("Failed to read line: {:?}", err);
-        process::exit(1);
-    });
-    line.trim().to_string()
+    io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_string())
 }
 
 fn prepare_argv(line: &String) -> Vec<CString> {
@@ -43,6 +64,27 @@ fn prepare_argv(line: &String) -> Vec<CString> {
     }
 
     argv
+}
+
+fn lookup_path(command: &CString, paths: &Vec<&str>) -> Result<CString, ()> {
+    let command = command.to_str().unwrap();
+    let command = "/".to_owned() + command;
+    for path in paths {
+        let dir = match fs::read_dir(path) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        for entry in dir {
+            let entry = entry.unwrap();
+            let file = entry.path().to_string_lossy().into_owned();
+            if file.ends_with(command.as_str()) {
+                return Ok(CString::new(file).unwrap());
+            }
+        }
+    }
+
+    Err(())
 }
 
 fn execute(command: &CString, argv: &[CString], env: &[CString]) {
