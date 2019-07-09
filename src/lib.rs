@@ -6,7 +6,8 @@ use std::io::prelude::*;
 use std::process;
 
 use nix::sys;
-use nix::unistd::{execve, fork, ForkResult};
+use nix::unistd;
+use nix::unistd::ForkResult;
 
 pub fn run() {
     let path = match env::var("PATH") {
@@ -31,22 +32,22 @@ pub fn run() {
             continue;
         }
 
-        let argv = prepare_argv(&line);
+        let mut argv = prepare_argv(&line);
         let mut command = argv[0].clone();
-        if !line.starts_with("/") {
+        if is_builtin(&command) {
+            execute_builtin(&command, &mut argv);
+            continue;
+        } else if !line.starts_with("/") {
             command = match lookup_path(&command, &paths) {
                 Ok(c) => c,
                 Err(_) => {
                     eprintln!("command not found");
                     continue;
-                },
+                }
             };
         }
 
         let env: Vec<CString> = Vec::new();
-        println!("command: {:?}", command);
-        println!("argv: {:?}", argv);
-        println!("env: {:?}", env);
         execute(&command, &argv, &env);
     }
 }
@@ -95,7 +96,7 @@ fn lookup_path(command: &CString, paths: &Vec<&str>) -> Result<CString, ()> {
 }
 
 fn execute(command: &CString, argv: &[CString], env: &[CString]) {
-    match fork() {
+    match unistd::fork() {
         Ok(ForkResult::Parent { child }) => {
             match sys::wait::waitpid(child, None) {
                 Ok(_) => (),
@@ -103,11 +104,53 @@ fn execute(command: &CString, argv: &[CString], env: &[CString]) {
             };
         },
         Ok(ForkResult::Child) => {
-            match execve(&command, &argv, &env) {
+            match unistd::execve(&command, &argv, &env) {
                 Ok(_) => (),
                 Err(e) => println!("{:?}", e),
             };
         },
         Err(_) => panic!("fork failed"),
     };
+}
+
+fn is_builtin(command: &CString) -> bool {
+    let command = command.to_str().unwrap();
+    return command == "cd";
+}
+
+fn execute_builtin(command: &CString, argv: &mut[CString]) {
+    let builtin = command.to_str().unwrap();
+    match builtin {
+        "cd" => cd(argv).unwrap_or_else(|_err| {
+            ()
+        }),
+        _    => (),
+    }
+}
+
+fn cd(argv: &mut[CString]) -> nix::Result<()> {
+    if argv.len() > 2 {
+        println!("too many arguments");
+        return Err(nix::Error::UnsupportedOperation);
+    }
+
+    let home = match env::var("HOME") {
+        Ok(value) => value,
+        Err(_) => String::from(""),
+    };
+
+    let directory;
+    if argv.len() == 2 {
+        directory = argv[1].to_str().unwrap();
+    } else {
+        directory = home.as_str();
+    }
+
+    match unistd::chdir(directory) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            println!("failed to change directory: {:?}", e);
+            Ok(())
+        }
+    }
 }
