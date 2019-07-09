@@ -26,12 +26,20 @@ pub fn run() {
             process::exit(1);
         });
 
+        if line.is_empty() {
+            println!("");
+            continue;
+        }
+
         let argv = prepare_argv(&line);
         let mut command = argv[0].clone();
         if !line.starts_with(".") || !line.starts_with("/") {
             command = match lookup_path(&command, &paths) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(_) => {
+                    eprintln!("command not found");
+                    continue;
+                },
             };
         }
 
