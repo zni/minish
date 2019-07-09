@@ -28,6 +28,7 @@ impl<'a> Shell<'a> {
     fn new() -> Shell<'a> {
         let mut builtins = HashSet::new();
         builtins.insert("cd");
+        builtins.insert("exit");
 
         Shell { builtins }
     }
@@ -162,6 +163,7 @@ fn execute_builtin(command: &CString, argv: &mut[CString]) {
         "cd" => cd(argv).unwrap_or_else(|err| {
             handle_error(err)
         }),
+        "exit" => exit(),
         _    => (),
     }
 }
@@ -191,4 +193,8 @@ fn cd(argv: &mut[CString]) -> Result<()> {
             Err(Error::CommandFailed)
         }
     }
+}
+
+fn exit() {
+    process::exit(0)
 }
