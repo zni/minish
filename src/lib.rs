@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::ffi::CString;
@@ -9,6 +10,34 @@ use nix::sys;
 use nix::unistd;
 use nix::unistd::ForkResult;
 
+enum Error {
+    ForkFailed,
+    FileNotFound,
+    IOFailed,
+    UnsupportedOperation,
+    CommandFailed
+}
+
+type Result<T> = std::result::Result<T, Error>;
+
+struct Shell<'a> {
+    builtins: HashSet<&'a str>
+}
+
+impl<'a> Shell<'a> {
+    fn new() -> Shell<'a> {
+        let mut builtins = HashSet::new();
+        builtins.insert("cd");
+
+        Shell { builtins }
+    }
+
+    fn is_builtin(&self, command: &CString) -> bool {
+        let command = command.to_str().unwrap();
+        self.builtins.contains(command)
+    }
+}
+
 pub fn run() {
     let path = match env::var("PATH") {
         Ok(value) => value,
@@ -16,14 +45,15 @@ pub fn run() {
     };
     let paths: Vec<&str> = path.split(":").collect();
 
+    let shell = Shell::new();
+
     loop {
         prompt().unwrap_or_else(|err| {
-            eprintln!("Failed to display prompt: {:?}", err);
-            process::exit(1);
+            handle_error(err);
         });
 
         let line = read_line().unwrap_or_else(|err| {
-            eprintln!("Failed to read line: {:?}", err);
+            handle_error(err);
             process::exit(1);
         });
 
@@ -34,14 +64,14 @@ pub fn run() {
 
         let mut argv = prepare_argv(&line);
         let mut command = argv[0].clone();
-        if is_builtin(&command) {
+        if shell.is_builtin(&command) {
             execute_builtin(&command, &mut argv);
             continue;
         } else if !line.starts_with("/") {
             command = match lookup_path(&command, &paths) {
                 Ok(c) => c,
-                Err(_) => {
-                    eprintln!("command not found");
+                Err(e) => {
+                    handle_error(e);
                     continue;
                 }
             };
@@ -52,15 +82,28 @@ pub fn run() {
     }
 }
 
-fn prompt() -> std::io::Result<()> {
+fn handle_error(error: Error) {
+    match error {
+        Error::ForkFailed => {
+            eprintln!("fork failed");
+            process::exit(1);
+        },
+        Error::FileNotFound => eprintln!("file not found"),
+        Error::IOFailed => eprintln!("I/O failed"),
+        Error::UnsupportedOperation => (),
+        Error::CommandFailed => (),
+    }
+}
+
+fn prompt() -> Result<()> {
     print!("> ");
-    io::stdout().flush()?;
+    io::stdout().flush().map_err(|_err| Error::IOFailed)?;
     Ok(())
 }
 
-fn read_line() -> std::io::Result<String> {
+fn read_line() -> Result<String> {
     let mut line = String::new();
-    io::stdin().read_line(&mut line)?;
+    io::stdin().read_line(&mut line).unwrap();
     Ok(line.trim().to_string())
 }
 
@@ -74,7 +117,7 @@ fn prepare_argv(line: &String) -> Vec<CString> {
     argv
 }
 
-fn lookup_path(command: &CString, paths: &Vec<&str>) -> Result<CString, ()> {
+fn lookup_path(command: &CString, paths: &Vec<&str>) -> Result<CString> {
     let command = command.to_str().unwrap();
     let command = "/".to_owned() + command;
     for path in paths {
@@ -92,7 +135,7 @@ fn lookup_path(command: &CString, paths: &Vec<&str>) -> Result<CString, ()> {
         }
     }
 
-    Err(())
+    Err(Error::FileNotFound)
 }
 
 fn execute(command: &CString, argv: &[CString], env: &[CString]) {
@@ -113,25 +156,20 @@ fn execute(command: &CString, argv: &[CString], env: &[CString]) {
     };
 }
 
-fn is_builtin(command: &CString) -> bool {
-    let command = command.to_str().unwrap();
-    return command == "cd";
-}
-
 fn execute_builtin(command: &CString, argv: &mut[CString]) {
     let builtin = command.to_str().unwrap();
     match builtin {
-        "cd" => cd(argv).unwrap_or_else(|_err| {
-            ()
+        "cd" => cd(argv).unwrap_or_else(|err| {
+            handle_error(err)
         }),
         _    => (),
     }
 }
 
-fn cd(argv: &mut[CString]) -> nix::Result<()> {
+fn cd(argv: &mut[CString]) -> Result<()> {
     if argv.len() > 2 {
         println!("too many arguments");
-        return Err(nix::Error::UnsupportedOperation);
+        return Err(Error::UnsupportedOperation);
     }
 
     let home = match env::var("HOME") {
@@ -150,7 +188,7 @@ fn cd(argv: &mut[CString]) -> nix::Result<()> {
         Ok(_) => Ok(()),
         Err(e) => {
             println!("failed to change directory: {:?}", e);
-            Ok(())
+            Err(Error::CommandFailed)
         }
     }
 }
